@@ -36,8 +36,9 @@ public partial class RhinoMCPFunctions
 
             sourceObjects.Add(obj);
             var brep = GetBrepFromObject(obj);
-            if (brep != null)
-                breps.Add(brep);
+            if (brep == null)
+                throw new InvalidOperationException($"Object {idStr} is not a solid, surface, or extrusion and cannot be used in a boolean operation");
+            breps.Add(brep);
         }
 
         if (breps.Count < 2)
@@ -117,8 +118,9 @@ public partial class RhinoMCPFunctions
 
             subtractObjects.Add(obj);
             var brep = GetBrepFromObject(obj);
-            if (brep != null)
-                subtractBreps.Add(brep);
+            if (brep == null)
+                throw new InvalidOperationException($"Object {idStr} is not a solid, surface, or extrusion and cannot be used in a boolean operation");
+            subtractBreps.Add(brep);
         }
 
         if (subtractBreps.Count == 0)
@@ -184,8 +186,9 @@ public partial class RhinoMCPFunctions
 
             sourceObjects.Add(obj);
             var brep = GetBrepFromObject(obj);
-            if (brep != null)
-                breps.Add(brep);
+            if (brep == null)
+                throw new InvalidOperationException($"Object {idStr} is not a solid, surface, or extrusion and cannot be used in a boolean operation");
+            breps.Add(brep);
         }
 
         if (breps.Count < 2)

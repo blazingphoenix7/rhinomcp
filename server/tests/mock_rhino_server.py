@@ -177,6 +177,13 @@ class MockRhinoServer:
         "undo", "redo", "create_layer", "delete_layer",
     }
 
+    # Commands whose handler honors a params-level dry_run preview, mirroring the
+    # plugin's [McpCommand(..., SupportsDryRun = true)]. dry_run on anything else
+    # is rejected; a dry_run on one of these previews and carries no delta/health.
+    SUPPORTS_DRY_RUN = {
+        "boolean_union", "boolean_difference", "boolean_intersection",
+    }
+
     def _process_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         """Process a command and return a response."""
         cmd_type = command.get("type", "")
@@ -222,15 +229,24 @@ class MockRhinoServer:
         if not handler:
             return {"status": "error", "message": f"Unknown command: {cmd_type}"}
 
+        # dry_run is a preview only the declaring commands honor; reject it on any
+        # other command up front, exactly as the plugin dispatcher does.
+        dry_run_requested = bool(params.get("dry_run"))
+        if dry_run_requested and cmd_type not in self.SUPPORTS_DRY_RUN:
+            return {"status": "error", "message": f"Command {cmd_type} does not support dry_run"}
+
         try:
             # Mirror the plugin: when the client asks for a delta, snapshot the
-            # object id set around a mutating handler and attach what changed.
+            # object id set around a mutating handler and attach what changed. A
+            # supported dry_run previews the result and changes nothing, so it
+            # carries no delta or health.
+            is_preview = dry_run_requested and cmd_type in self.SUPPORTS_DRY_RUN
             track_delta = bool(command.get("include_delta")) and (
                 cmd_type in self._MUTATING_COMMANDS
-            )
+            ) and not is_preview
             track_health = bool(command.get("include_health")) and (
                 cmd_type in self._MUTATING_COMMANDS
-            )
+            ) and not is_preview
             before = set(self.objects.keys()) if (track_delta or track_health) else None
             result = handler(params)
             if isinstance(result, dict) and (track_delta or track_health):
@@ -875,6 +891,14 @@ class MockRhinoServer:
         if len(object_ids) < 2:
             raise Exception("Boolean union requires at least 2 objects")
 
+        if params.get("dry_run"):
+            return self._boolean_prediction(
+                "Boolean union would create 1 object(s)",
+                [[-2, -2, -2], [2, 2, 2]],
+                volume=64.0,
+                area=96.0,
+            )
+
         result_id = str(uuid.uuid4())
         result = {
             "id": result_id,
@@ -901,6 +925,14 @@ class MockRhinoServer:
         if not base_id or not subtract_ids:
             raise Exception("Boolean difference requires base_id and subtract_ids")
 
+        if params.get("dry_run"):
+            return self._boolean_prediction(
+                "Boolean difference would create 1 object(s)",
+                [[-1, -1, -1], [1, 1, 1]],
+                volume=8.0,
+                area=24.0,
+            )
+
         result_id = str(uuid.uuid4())
         result = {
             "id": result_id,
@@ -926,6 +958,14 @@ class MockRhinoServer:
         if len(object_ids) < 2:
             raise Exception("Boolean intersection requires at least 2 objects")
 
+        if params.get("dry_run"):
+            return self._boolean_prediction(
+                "Boolean intersection would create 1 object(s)",
+                [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+                volume=1.0,
+                area=6.0,
+            )
+
         result_id = str(uuid.uuid4())
         result = {
             "id": result_id,
@@ -943,6 +983,27 @@ class MockRhinoServer:
 
         self.objects[result_id] = result
         return {"result_ids": [result_id], "count": 1, "message": "Boolean intersection created 1 object(s)"}
+
+    def _boolean_prediction(self, message: str, bounding_box: list, volume: float, area: float) -> Dict:
+        """Mirror the plugin's dry_run response: the metrics a real run would
+        produce, with no object added or removed. The mock holds no real
+        geometry, so the numbers are fixed to the bounding box the matching
+        handler uses; this exercises the prediction wiring and shape."""
+        return {
+            "dry_run": True,
+            "would_succeed": True,
+            "count": 1,
+            "results": [
+                {
+                    "valid": True,
+                    "is_solid": True,
+                    "volume": volume,
+                    "area": area,
+                    "bounding_box": bounding_box,
+                }
+            ],
+            "message": message,
+        }
 
 
     def _run_command(self, params: Dict) -> Dict:

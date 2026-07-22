@@ -224,6 +224,9 @@ def test_new_commands():
         ("commands/boolean_union.json", {"object_ids": [GUID, GUID]}),
         ("commands/boolean_difference.json", {"base_id": GUID, "subtract_ids": [GUID]}),
         ("commands/boolean_intersection.json", {"object_ids": [GUID, GUID]}),
+        ("commands/boolean_union.json", {"object_ids": [GUID, GUID], "dry_run": True}),
+        ("commands/boolean_difference.json", {"base_id": GUID, "subtract_ids": [GUID], "dry_run": True}),
+        ("commands/boolean_intersection.json", {"object_ids": [GUID, GUID], "dry_run": True}),
         ("commands/create_objects.json", {"Box1": {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}}}),
         ("commands/execute_rhinocommon_csharp_code.json", {"code": "doc.Objects.AddPoint(0,0,0);"}),
         ("commands/extrude_curve.json", {"curve_id": GUID, "direction": [0, 0, 10]}),
@@ -753,6 +756,61 @@ def test_responses():
             all_passed = False
     print("  section_profile_result negatives correctly rejected")
 
+    # Boolean result: one schema, two shapes discriminated by dry_run.
+    print("  boolean_result:")
+    committed = {
+        "result_ids": ["12345678-1234-1234-1234-123456789012"],
+        "count": 1,
+        "message": "Boolean union created 1 object(s)",
+    }
+    if not validate("responses/boolean_result.json", committed):
+        all_passed = False
+    preview_solid = {
+        "dry_run": True,
+        "would_succeed": True,
+        "count": 1,
+        "results": [
+            {"valid": True, "is_solid": True, "volume": 1500.0, "area": 800.0,
+             "bounding_box": [[0, 0, 0], [15, 10, 10]]}
+        ],
+        "message": "Boolean union would create 1 object(s)",
+    }
+    if not validate("responses/boolean_result.json", preview_solid):
+        all_passed = False
+    # An invalid predicted result carries a reason and, because mass-property
+    # compute can fail on a bad brep, omits both volume and area.
+    preview_invalid = {
+        "dry_run": True,
+        "would_succeed": True,
+        "count": 1,
+        "results": [
+            {"valid": False, "reason": "brep is not manifold", "is_solid": False,
+             "bounding_box": [[0, 0, 0], [1, 1, 1]]}
+        ],
+        "message": "Boolean difference would create 1 object(s)",
+    }
+    if not validate("responses/boolean_result.json", preview_invalid):
+        all_passed = False
+
+    boolean_schema = load_schema_with_refs("responses/boolean_result.json")
+    boolean_validator = Draft202012Validator(boolean_schema)
+    bad_booleans = [
+        {"count": 1, "message": "x"},  # committed shape missing result_ids
+        {"dry_run": True, "count": 1, "results": [], "message": "x"},  # preview missing would_succeed
+        {"dry_run": True, "would_succeed": True, "count": 1, "message": "x",
+         "results": [{"valid": True, "is_solid": True, "area": 1.0,
+                      "volume": "lots", "bounding_box": [[0, 0, 0], [1, 1, 1]]}]},  # volume wrong type
+        {"result_ids": ["12345678-1234-1234-1234-123456789012"], "count": 1,
+         "message": "x", "bogus": 1},  # committed shape unknown field
+        {"dry_run": True, "would_succeed": True, "count": 1, "message": "x",
+         "results": [{"valid": True, "bounding_box": [[0, 0, 0], [1, 1, 1]]}]},  # preview result missing is_solid
+    ]
+    for bad in bad_booleans:
+        if not list(boolean_validator.iter_errors(bad)):
+            print(f"  FAIL: boolean_result accepted invalid payload {bad}")
+            all_passed = False
+    print("  boolean_result negatives correctly rejected")
+
     return all_passed
 
 
@@ -788,6 +846,9 @@ def test_invalid_examples():
         ("commands/create_object.json", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}, "bogus": 1}, "create_object unknown top-level field"),
         # New schemas reject obvious mistakes
         ("commands/boolean_union.json", {"object_ids": ["only-one"]}, "boolean_union not enough ids (and bad GUID)"),
+        ("commands/boolean_union.json", {"object_ids": ["12345678-1234-1234-1234-123456789012", "12345678-1234-1234-1234-123456789012"], "dry_run": "yes"}, "boolean_union dry_run not boolean"),
+        ("commands/boolean_difference.json", {"base_id": "12345678-1234-1234-1234-123456789012", "subtract_ids": ["12345678-1234-1234-1234-123456789012"], "dry_run": 1}, "boolean_difference dry_run not boolean"),
+        ("commands/boolean_intersection.json", {"object_ids": ["12345678-1234-1234-1234-123456789012", "12345678-1234-1234-1234-123456789012"], "dry_run": "no"}, "boolean_intersection dry_run not boolean"),
         ("commands/extrude_curve.json", {"curve_id": "12345678-1234-1234-1234-123456789012", "direction": [0, 0, 0]}, "extrude_curve zero direction"),
         ("commands/pipe.json", {"curve_id": "12345678-1234-1234-1234-123456789012", "radius": 0}, "pipe non-positive radius"),
         ("commands/undo.json", {"steps": 0}, "undo zero steps"),

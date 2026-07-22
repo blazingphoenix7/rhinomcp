@@ -407,6 +407,128 @@ class TestBooleanOperations:
 
         assert result["count"] == 1
 
+    def test_boolean_union_dry_run_predicts_then_commits(self, mock_server):
+        """A dry_run union returns a prediction and leaves the document
+        untouched; the same inputs then commit for real."""
+        from rhinomcp.server import get_rhino_connection
+
+        conn = get_rhino_connection()
+
+        obj1 = conn.send_command("create_object", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}})
+        obj2 = conn.send_command("create_object", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}})
+
+        before = conn.send_command("get_document_summary", {})["object_count"]
+
+        prediction = conn.send_command("boolean_union", {
+            "object_ids": [obj1["id"], obj2["id"]],
+            "dry_run": True,
+        })
+
+        after = conn.send_command("get_document_summary", {})["object_count"]
+
+        assert prediction["dry_run"] is True
+        assert prediction["would_succeed"] is True
+        assert prediction["count"] == 1
+        assert "result_ids" not in prediction
+        entry = prediction["results"][0]
+        assert entry["valid"] is True
+        assert entry["is_solid"] is True
+        assert entry["volume"] > 0
+        assert "area" in entry
+        assert "bounding_box" in entry
+
+        # The preview added and removed nothing, so both inputs still resolve.
+        assert after == before
+        conn.send_command("get_object_info", {"id": obj1["id"]})
+        conn.send_command("get_object_info", {"id": obj2["id"]})
+
+        committed = conn.send_command("boolean_union", {
+            "object_ids": [obj1["id"], obj2["id"]],
+            "name": "CommittedUnion",
+        })
+        assert committed["count"] == 1
+        assert len(committed["result_ids"]) == 1
+
+    def test_boolean_difference_dry_run_leaves_inputs(self, mock_server):
+        """A dry_run difference previews without deleting the base or subtract
+        inputs."""
+        from rhinomcp.server import get_rhino_connection
+
+        conn = get_rhino_connection()
+
+        base = conn.send_command("create_object", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}})
+        subtract = conn.send_command("create_object", {"type": "SPHERE", "params": {"radius": 1}})
+
+        prediction = conn.send_command("boolean_difference", {
+            "base_id": base["id"],
+            "subtract_ids": [subtract["id"]],
+            "dry_run": True,
+        })
+
+        assert prediction["dry_run"] is True
+        assert "result_ids" not in prediction
+        assert prediction["results"][0]["bounding_box"] is not None
+        conn.send_command("get_object_info", {"id": base["id"]})
+        conn.send_command("get_object_info", {"id": subtract["id"]})
+
+
+class TestDryRunContract:
+    """dry_run is a declared, per-command capability: unsupported commands
+    reject it, and both boolean shapes hold up under strict response validation."""
+
+    def test_dry_run_rejected_on_unsupported_command(self, mock_server):
+        """create_object does not declare dry_run support, so the flag is
+        rejected with a clear error and nothing is created, mirroring the plugin
+        dispatcher's fail-closed check."""
+        import rhinomcp.server as srv
+        from rhinomcp.server import get_rhino_connection
+
+        original = srv.RHINO_VALIDATE
+        srv._rhino_connection = None
+        srv.RHINO_VALIDATE = "off"  # bypass pre-flight so the request reaches the mock
+        try:
+            conn = get_rhino_connection()
+            with pytest.raises(Exception, match="does not support dry_run"):
+                conn.send_command("create_object", {
+                    "type": "BOX",
+                    "params": {"width": 1, "length": 1, "height": 1},
+                    "dry_run": True,
+                })
+        finally:
+            srv.RHINO_VALIDATE = original
+            srv._rhino_connection = None
+
+    def test_real_and_dry_run_validate_in_strict_mode(self, mock_server):
+        """Under strict response validation, a real boolean and a dry_run boolean
+        both pass responses/boolean_result.json; a shape drift would raise here."""
+        import rhinomcp.server as srv
+        from rhinomcp.server import get_rhino_connection
+
+        original = srv.RHINO_VALIDATE
+        srv._rhino_connection = None
+        srv.RHINO_VALIDATE = "strict"
+        try:
+            conn = get_rhino_connection()
+            a = conn.send_command("create_object", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}})
+            b = conn.send_command("create_object", {"type": "BOX", "params": {"width": 1, "length": 1, "height": 1}})
+
+            preview = conn.send_command("boolean_union", {
+                "object_ids": [a["id"], b["id"]],
+                "dry_run": True,
+            })
+            assert preview["dry_run"] is True
+            assert "result_ids" not in preview
+
+            committed = conn.send_command("boolean_union", {
+                "object_ids": [a["id"], b["id"]],
+                "name": "StrictUnion",
+            })
+            assert "result_ids" in committed
+            assert committed["count"] == 1
+        finally:
+            srv.RHINO_VALIDATE = original
+            srv._rhino_connection = None
+
 
 class TestLayers:
     """Integration tests for layer operations."""
@@ -757,6 +879,35 @@ class TestChangeDeltaPerception:
             self._restore(original)
 
         assert "_delta" not in result
+
+    def test_dry_run_carries_no_delta_or_health(self, mock_server):
+        """A dry_run mutates nothing, so with perception on it still comes back
+        with no _delta or _health block."""
+        import rhinomcp.server as srv
+        from rhinomcp.server import get_rhino_connection
+
+        original = srv.RHINO_PERCEPTION
+        self._enable()
+        try:
+            conn = get_rhino_connection()
+            obj1 = conn.send_command("create_object", {
+                "type": "BOX", "name": "DryDeltaA",
+                "params": {"width": 1, "length": 1, "height": 1},
+            })
+            obj2 = conn.send_command("create_object", {
+                "type": "BOX", "name": "DryDeltaB",
+                "params": {"width": 1, "length": 1, "height": 1},
+            })
+            prediction = conn.send_command("boolean_union", {
+                "object_ids": [obj1["id"], obj2["id"]],
+                "dry_run": True,
+            })
+        finally:
+            self._restore(original)
+
+        assert prediction["dry_run"] is True
+        assert "_delta" not in prediction
+        assert "_health" not in prediction
 
     def test_large_op_truncates_id_lists(self, mock_server):
         """A single operation that creates more than the cap reports exact

@@ -1294,6 +1294,205 @@ public partial class RhinoMCPFunctions
             results["section_profile"] = new JObject { ["status"] = "fail", ["error"] = e.Message };
         }
 
+        // Test: boolean_union must reject a non-brep input instead of silently
+        // deleting it. Two overlapping boxes plus a line: the union appended
+        // every input to the delete list before extracting a brep, so under the
+        // default delete_sources it destroyed the line. It must now throw and
+        // leave all three inputs in the document.
+        try
+        {
+            var pos = visualMode ? GetNextPosition() : new JArray { 170, 0, 0 };
+            var ub1 = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectUnionBox1",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos
+            });
+            var pos2 = new JArray { ((JArray)pos)[0].ToObject<double>() + 5, ((JArray)pos)[1].ToObject<double>(), 0 };
+            var ub2 = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectUnionBox2",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos2
+            });
+            var uLine = CreateObject(new JObject
+            {
+                ["type"] = "LINE",
+                ["name"] = "MCPBoolRejectUnionLine",
+                ["params"] = new JObject { ["start"] = new JArray { 0, 0, 0 }, ["end"] = new JArray { 10, 10, 0 } },
+                ["translation"] = pos
+            });
+            string ub1Id = ub1["id"]?.ToString();
+            string ub2Id = ub2["id"]?.ToString();
+            string uLineId = uLine["id"]?.ToString();
+
+            bool threw = false;
+            try
+            {
+                BooleanUnion(new JObject
+                {
+                    ["object_ids"] = new JArray { ub1Id, ub2Id, uLineId },
+                    ["delete_sources"] = true
+                });
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            bool allResolve = doc.Objects.Find(new Guid(ub1Id)) != null
+                && doc.Objects.Find(new Guid(ub2Id)) != null
+                && doc.Objects.Find(new Guid(uLineId)) != null;
+
+            DeleteObject(new JObject { ["id"] = ub1Id });
+            DeleteObject(new JObject { ["id"] = ub2Id });
+            DeleteObject(new JObject { ["id"] = uLineId });
+
+            if (!threw)
+                throw new Exception("boolean_union accepted a non-brep input instead of throwing");
+            if (!allResolve)
+                throw new Exception("boolean_union deleted an input after rejecting a non-brep");
+            results["boolean_union_rejects_non_brep"] = new JObject { ["status"] = "pass" };
+            VisualUpdate("boolean_union rejects a non-brep and deletes nothing");
+        }
+        catch (Exception e)
+        {
+            results["boolean_union_rejects_non_brep"] = new JObject { ["status"] = "fail", ["error"] = e.Message };
+        }
+
+        // Test: boolean_difference must reject a non-brep in subtract_ids the
+        // same way, leaving the base and both subtract inputs in the document.
+        try
+        {
+            var pos = visualMode ? GetNextPosition() : new JArray { 190, 0, 0 };
+            var dBase = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectDiffBase",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos
+            });
+            var pos2 = new JArray { ((JArray)pos)[0].ToObject<double>() + 5, ((JArray)pos)[1].ToObject<double>(), 0 };
+            var dSub = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectDiffSub",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos2
+            });
+            var dLine = CreateObject(new JObject
+            {
+                ["type"] = "LINE",
+                ["name"] = "MCPBoolRejectDiffLine",
+                ["params"] = new JObject { ["start"] = new JArray { 0, 0, 0 }, ["end"] = new JArray { 10, 10, 0 } },
+                ["translation"] = pos
+            });
+            string dBaseId = dBase["id"]?.ToString();
+            string dSubId = dSub["id"]?.ToString();
+            string dLineId = dLine["id"]?.ToString();
+
+            bool threw = false;
+            try
+            {
+                BooleanDifference(new JObject
+                {
+                    ["base_id"] = dBaseId,
+                    ["subtract_ids"] = new JArray { dSubId, dLineId },
+                    ["delete_sources"] = true
+                });
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            bool allResolve = doc.Objects.Find(new Guid(dBaseId)) != null
+                && doc.Objects.Find(new Guid(dSubId)) != null
+                && doc.Objects.Find(new Guid(dLineId)) != null;
+
+            DeleteObject(new JObject { ["id"] = dBaseId });
+            DeleteObject(new JObject { ["id"] = dSubId });
+            DeleteObject(new JObject { ["id"] = dLineId });
+
+            if (!threw)
+                throw new Exception("boolean_difference accepted a non-brep subtract input instead of throwing");
+            if (!allResolve)
+                throw new Exception("boolean_difference deleted an input after rejecting a non-brep");
+            results["boolean_difference_rejects_non_brep"] = new JObject { ["status"] = "pass" };
+            VisualUpdate("boolean_difference rejects a non-brep and deletes nothing");
+        }
+        catch (Exception e)
+        {
+            results["boolean_difference_rejects_non_brep"] = new JObject { ["status"] = "fail", ["error"] = e.Message };
+        }
+
+        // Test: boolean_intersection must reject a non-brep input the same way,
+        // leaving both boxes and the line in the document.
+        try
+        {
+            var pos = visualMode ? GetNextPosition() : new JArray { 210, 0, 0 };
+            var ib1 = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectIntBox1",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos
+            });
+            var pos2 = new JArray { ((JArray)pos)[0].ToObject<double>() + 5, ((JArray)pos)[1].ToObject<double>(), 0 };
+            var ib2 = CreateObject(new JObject
+            {
+                ["type"] = "BOX",
+                ["name"] = "MCPBoolRejectIntBox2",
+                ["params"] = new JObject { ["width"] = 10, ["length"] = 10, ["height"] = 10 },
+                ["translation"] = pos2
+            });
+            var iLine = CreateObject(new JObject
+            {
+                ["type"] = "LINE",
+                ["name"] = "MCPBoolRejectIntLine",
+                ["params"] = new JObject { ["start"] = new JArray { 0, 0, 0 }, ["end"] = new JArray { 10, 10, 0 } },
+                ["translation"] = pos
+            });
+            string ib1Id = ib1["id"]?.ToString();
+            string ib2Id = ib2["id"]?.ToString();
+            string iLineId = iLine["id"]?.ToString();
+
+            bool threw = false;
+            try
+            {
+                BooleanIntersection(new JObject
+                {
+                    ["object_ids"] = new JArray { ib1Id, ib2Id, iLineId },
+                    ["delete_sources"] = true
+                });
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            bool allResolve = doc.Objects.Find(new Guid(ib1Id)) != null
+                && doc.Objects.Find(new Guid(ib2Id)) != null
+                && doc.Objects.Find(new Guid(iLineId)) != null;
+
+            DeleteObject(new JObject { ["id"] = ib1Id });
+            DeleteObject(new JObject { ["id"] = ib2Id });
+            DeleteObject(new JObject { ["id"] = iLineId });
+
+            if (!threw)
+                throw new Exception("boolean_intersection accepted a non-brep input instead of throwing");
+            if (!allResolve)
+                throw new Exception("boolean_intersection deleted an input after rejecting a non-brep");
+            results["boolean_intersection_rejects_non_brep"] = new JObject { ["status"] = "pass" };
+            VisualUpdate("boolean_intersection rejects a non-brep and deletes nothing");
+        }
+        catch (Exception e)
+        {
+            results["boolean_intersection_rejects_non_brep"] = new JObject { ["status"] = "fail", ["error"] = e.Message };
+        }
+
         // Cleanup
         if (!visualMode)
         {
@@ -1329,6 +1528,15 @@ public partial class RhinoMCPFunctions
                 DeleteObject(new JObject { ["name"] = "MCPSectionSurface" });
                 DeleteObject(new JObject { ["name"] = "MCPSectTubeBig" });
                 DeleteObject(new JObject { ["name"] = "MCPSectTubeSmall" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectUnionBox1" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectUnionBox2" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectUnionLine" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectDiffBase" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectDiffSub" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectDiffLine" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectIntBox1" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectIntBox2" });
+                DeleteObject(new JObject { ["name"] = "MCPBoolRejectIntLine" });
             }
             catch
             {

@@ -25,12 +25,20 @@ from typing import Dict, Any, Optional
 class MockRhinoServer:
     """A mock Rhino server for testing MCP commands."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 1999):
+    def __init__(self, host: str = "127.0.0.1", port: int = 1999,
+                 legacy_plugin: bool = False):
         self.host = host
         self.port = port
         self.server_socket: Optional[socket.socket] = None
         self.running = False
         self.thread: Optional[threading.Thread] = None
+        # Stand in for a plugin built before dry_run existed: it never advertises
+        # supports_dry_run, and it drops the flag it doesn't know about instead of
+        # previewing, so the boolean handlers mutate the document for real.
+        self.legacy_plugin = legacy_plugin
+        self._handler_table: Optional[Dict[str, Any]] = None
+        # Command types received, in order, so a test can assert what was sent.
+        self.received_commands: list = []
 
         # Mock document state
         self.objects: Dict[str, Dict[str, Any]] = {}
@@ -184,12 +192,13 @@ class MockRhinoServer:
         "boolean_union", "boolean_difference", "boolean_intersection",
     }
 
-    def _process_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a command and return a response."""
-        cmd_type = command.get("type", "")
-        params = command.get("params", {})
+    def _handlers(self) -> Dict[str, Any]:
+        """The mock's command surface, built once. describe_capabilities reports
+        it, the same way the plugin reports its reflected dispatch table."""
+        if self._handler_table is not None:
+            return self._handler_table
 
-        handlers = {
+        self._handler_table = {
             "get_document_summary": self._get_document_summary,
             "get_objects": self._get_objects,
             "create_object": self._create_object,
@@ -224,10 +233,22 @@ class MockRhinoServer:
             "offset_curve": self._offset_curve,
             "pipe": self._pipe,
         }
+        return self._handler_table
 
-        handler = handlers.get(cmd_type)
+    def _process_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a command and return a response."""
+        cmd_type = command.get("type", "")
+        params = command.get("params", {})
+        self.received_commands.append(cmd_type)
+
+        handler = self._handlers().get(cmd_type)
         if not handler:
             return {"status": "error", "message": f"Unknown command: {cmd_type}"}
+
+        if self.legacy_plugin:
+            # An old plugin has no notion of dry_run, so it drops the unknown
+            # param and runs the command for real.
+            params = {k: v for k, v in params.items() if k != "dry_run"}
 
         # dry_run is a preview only the declaring commands honor; reject it on any
         # other command up front, exactly as the plugin dispatcher does.
@@ -1169,17 +1190,21 @@ class MockRhinoServer:
         return {"count": len(matched), "commands": matched}
 
     def _describe_capabilities(self, params: Dict) -> Dict:
-        """Representative capabilities shape. The real plugin reflects its live
-        dispatch table; the mock returns a fixed, well-formed sample so the
-        wiring and the response shape can be exercised."""
+        """Self-description built from the mock's own handler table, the way the
+        real plugin builds it from its live dispatch table. In legacy_plugin mode
+        supports_dry_run is left out of every entry, which is all an old plugin's
+        answer can say."""
+        commands = []
+        for name in sorted(self._handlers()):
+            entry = {"name": name, "read_only": name not in self._MUTATING_COMMANDS}
+            if not self.legacy_plugin:
+                entry["supports_dry_run"] = name in self.SUPPORTS_DRY_RUN
+            commands.append(entry)
+
         return {
             "version": "0.0.0-mock",
-            "command_count": 3,
-            "commands": [
-                {"name": "create_object", "read_only": False},
-                {"name": "delete_object", "read_only": False},
-                {"name": "get_document_summary", "read_only": True},
-            ],
+            "command_count": len(commands),
+            "commands": commands,
             "perception": {
                 "description": "Mutating commands accept opt-in envelope flags.",
                 "envelope_flags": [

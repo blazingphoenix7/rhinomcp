@@ -1093,9 +1093,11 @@ public partial class RhinoMCPFunctions
         }
 
         // Test: describe_capabilities reports the live dispatch table with
-        // read-only flags, the perception envelope flags, and the version. The
-        // command list is reflection-driven, so it must include the commands we
-        // exercise here and describe_capabilities itself, with correct read_only.
+        // read-only and dry_run flags, the perception envelope flags, and the
+        // version. The command list is reflection-driven, so it must include the
+        // commands we exercise here and describe_capabilities itself, with the
+        // flags the dispatcher gates on. A client reads supports_dry_run before
+        // sending a preview, so a wrong flag here would cost source objects.
         try
         {
             var caps = DescribeCapabilities(new JObject());
@@ -1106,8 +1108,12 @@ public partial class RhinoMCPFunctions
                 throw new Exception("version is empty");
 
             var readOnly = new System.Collections.Generic.Dictionary<string, bool>();
+            var dryRun = new System.Collections.Generic.Dictionary<string, bool>();
             foreach (var c in cmds)
+            {
                 readOnly[c["name"].ToString()] = (bool)c["read_only"];
+                dryRun[c["name"].ToString()] = (bool)c["supports_dry_run"];
+            }
 
             if (!readOnly.ContainsKey("describe_capabilities") || !readOnly["describe_capabilities"])
                 throw new Exception("describe_capabilities should list itself as read_only");
@@ -1115,6 +1121,14 @@ public partial class RhinoMCPFunctions
                 throw new Exception("create_object should be present and not read_only");
             if (!readOnly.ContainsKey("get_document_summary") || !readOnly["get_document_summary"])
                 throw new Exception("get_document_summary should be present and read_only");
+
+            foreach (var booleanCmd in new[] { "boolean_union", "boolean_difference", "boolean_intersection" })
+            {
+                if (!dryRun.ContainsKey(booleanCmd) || !dryRun[booleanCmd])
+                    throw new Exception(booleanCmd + " should advertise supports_dry_run");
+            }
+            if (!dryRun.ContainsKey("create_object") || dryRun["create_object"])
+                throw new Exception("create_object should be present and not advertise supports_dry_run");
 
             bool hasDelta = false, hasHealth = false;
             foreach (var f in (JArray)caps["perception"]["envelope_flags"])

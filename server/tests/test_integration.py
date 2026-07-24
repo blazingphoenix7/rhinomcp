@@ -34,6 +34,19 @@ def mock_server():
     server.stop()
 
 
+@pytest.fixture
+def legacy_mock_server():
+    """A plugin from before dry_run existed, on its own port. Tests reach it
+    through an explicit connection, so the global one is left alone."""
+    server = MockRhinoServer(port=19998, legacy_plugin=True)
+    server.start()
+    time.sleep(0.1)
+
+    yield server
+
+    server.stop()
+
+
 class TestCreateObject:
     """Integration tests for create_object."""
 
@@ -477,18 +490,18 @@ class TestDryRunContract:
     reject it, and both boolean shapes hold up under strict response validation."""
 
     def test_dry_run_rejected_on_unsupported_command(self, mock_server):
-        """create_object does not declare dry_run support, so the flag is
-        rejected with a clear error and nothing is created, mirroring the plugin
-        dispatcher's fail-closed check."""
+        """create_object does not declare dry_run support, so the client refuses
+        to send it at all: the flag never reaches the plugin."""
         import rhinomcp.server as srv
         from rhinomcp.server import get_rhino_connection
 
         original = srv.RHINO_VALIDATE
         srv._rhino_connection = None
-        srv.RHINO_VALIDATE = "off"  # bypass pre-flight so the request reaches the mock
+        srv.RHINO_VALIDATE = "off"  # bypass pre-flight so only the gate can refuse
+        mock_server.received_commands.clear()
         try:
             conn = get_rhino_connection()
-            with pytest.raises(Exception, match="does not support dry_run"):
+            with pytest.raises(Exception, match="does not report dry_run support"):
                 conn.send_command("create_object", {
                     "type": "BOX",
                     "params": {"width": 1, "length": 1, "height": 1},
@@ -497,6 +510,23 @@ class TestDryRunContract:
         finally:
             srv.RHINO_VALIDATE = original
             srv._rhino_connection = None
+
+        assert "create_object" not in mock_server.received_commands
+
+    def test_plugin_still_rejects_dry_run_it_cannot_honor(self, mock_server):
+        """The plugin keeps its own fail-closed check for clients that don't gate,
+        mirroring the dispatcher in RhinoMCPServer.ExecuteCommandInternal."""
+        response = mock_server._process_command({
+            "type": "create_object",
+            "params": {
+                "type": "BOX",
+                "params": {"width": 1, "length": 1, "height": 1},
+                "dry_run": True,
+            },
+        })
+
+        assert response["status"] == "error"
+        assert "does not support dry_run" in response["message"]
 
     def test_real_and_dry_run_validate_in_strict_mode(self, mock_server):
         """Under strict response validation, a real boolean and a dry_run boolean
@@ -528,6 +558,173 @@ class TestDryRunContract:
         finally:
             srv.RHINO_VALIDATE = original
             srv._rhino_connection = None
+
+
+class TestDryRunCapabilityGate:
+    """The server and the plugin ship separately, so a server that knows dry_run
+    can end up talking to a plugin that doesn't. That plugin drops the flag it
+    has never heard of and runs the real boolean, deleting the sources, while the
+    caller believes it asked for a preview. So the client refuses to send a
+    preview unless the plugin advertises support for that exact command.
+
+    Each test drives its own connection at an explicit port, the way
+    TestPerceptionPassthrough does: hermetic, never able to fall back to a real
+    Rhino on the default port, and immune to the module-reload ordering that can
+    leave a wrapper's import-time binding pointed elsewhere.
+    """
+
+    def _connection(self, monkeypatch, port):
+        from rhinomcp.server import RhinoConnection
+        import rhinomcp.tools.boolean_operations as boolean_mod
+
+        conn = RhinoConnection(host="127.0.0.1", port=port)
+        monkeypatch.setattr(boolean_mod, "get_rhino_connection", lambda: conn)
+        return conn
+
+    def _two_boxes(self, conn):
+        a = conn.send_command("create_object", {
+            "type": "BOX", "name": "GateA",
+            "params": {"width": 1, "length": 1, "height": 1}})
+        b = conn.send_command("create_object", {
+            "type": "BOX", "name": "GateB",
+            "params": {"width": 1, "length": 1, "height": 1}})
+        return a["id"], b["id"]
+
+    def test_old_plugin_would_run_the_real_boolean(self, legacy_mock_server):
+        """What the gate is there to stop, pinned: drive the old plugin directly
+        and the dry_run union deletes both sources and reports real result ids."""
+        a = legacy_mock_server._create_object({"type": "BOX", "name": "IgnoredA"})
+        b = legacy_mock_server._create_object({"type": "BOX", "name": "IgnoredB"})
+
+        response = legacy_mock_server._process_command({
+            "type": "boolean_union",
+            "params": {"object_ids": [a["id"], b["id"]], "dry_run": True},
+        })
+
+        assert response["status"] == "success"
+        assert "result_ids" in response["result"]
+        assert a["id"] not in legacy_mock_server.objects
+        assert b["id"] not in legacy_mock_server.objects
+
+    def test_union_dry_run_refused_and_sources_survive(self, legacy_mock_server, monkeypatch):
+        conn = self._connection(monkeypatch, 19998)
+        a, b = self._two_boxes(conn)
+        before = set(legacy_mock_server.objects)
+
+        with pytest.raises(Exception, match="does not report dry_run support"):
+            conn.send_command("boolean_union", {
+                "object_ids": [a, b],
+                "delete_sources": True,
+                "dry_run": True,
+            })
+
+        assert set(legacy_mock_server.objects) == before
+        assert a in legacy_mock_server.objects
+        assert b in legacy_mock_server.objects
+        assert "boolean_union" not in legacy_mock_server.received_commands
+
+    def test_difference_dry_run_refused_and_sources_survive(self, legacy_mock_server, monkeypatch):
+        conn = self._connection(monkeypatch, 19998)
+        base, subtract = self._two_boxes(conn)
+        before = set(legacy_mock_server.objects)
+
+        with pytest.raises(Exception, match="does not report dry_run support"):
+            conn.send_command("boolean_difference", {
+                "base_id": base,
+                "subtract_ids": [subtract],
+                "delete_sources": True,
+                "dry_run": True,
+            })
+
+        assert set(legacy_mock_server.objects) == before
+        assert base in legacy_mock_server.objects
+        assert subtract in legacy_mock_server.objects
+        assert "boolean_difference" not in legacy_mock_server.received_commands
+
+    def test_intersection_dry_run_refused_and_sources_survive(self, legacy_mock_server, monkeypatch):
+        conn = self._connection(monkeypatch, 19998)
+        a, b = self._two_boxes(conn)
+        before = set(legacy_mock_server.objects)
+
+        with pytest.raises(Exception, match="does not report dry_run support"):
+            conn.send_command("boolean_intersection", {
+                "object_ids": [a, b],
+                "delete_sources": True,
+                "dry_run": True,
+            })
+
+        assert set(legacy_mock_server.objects) == before
+        assert a in legacy_mock_server.objects
+        assert b in legacy_mock_server.objects
+        assert "boolean_intersection" not in legacy_mock_server.received_commands
+
+    def test_old_plugin_serves_a_normal_boolean_unchanged(self, legacy_mock_server, monkeypatch):
+        """Without dry_run nothing is gated: the command goes straight out and
+        the capability lookup never happens, so the old plugin is served exactly
+        as it was before."""
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        conn = self._connection(monkeypatch, 19998)
+        a, b = self._two_boxes(conn)
+
+        result = boolean_union(ctx=None, object_ids=[a, b], name="OldPluginUnion")
+
+        assert "Boolean union created" in result
+        assert "describe_capabilities" not in legacy_mock_server.received_commands
+
+    def test_dry_run_runs_end_to_end_when_the_plugin_advertises_it(self, mock_server, monkeypatch):
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        conn = self._connection(monkeypatch, 19999)
+        a, b = self._two_boxes(conn)
+
+        result = boolean_union(ctx=None, object_ids=[a, b], dry_run=True)
+
+        assert "Boolean union would create" in result
+        assert "Predicted results" in result
+        assert a in mock_server.objects
+        assert b in mock_server.objects
+
+    def test_capabilities_read_once_per_connection(self, mock_server, monkeypatch):
+        """The answer is cached, so several previews share one lookup, and the
+        lookup itself never re-enters the gate."""
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        conn = self._connection(monkeypatch, 19999)
+        a, b = self._two_boxes(conn)
+        mock_server.received_commands.clear()
+
+        for _ in range(3):
+            boolean_union(ctx=None, object_ids=[a, b], dry_run=True)
+
+        assert mock_server.received_commands.count("describe_capabilities") == 1
+        assert mock_server.received_commands.count("boolean_union") == 3
+
+    def test_reconnect_rereads_capabilities(self, mock_server, monkeypatch):
+        """A reconnect can land on a different plugin, so the cached answer dies
+        with the socket."""
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        conn = self._connection(monkeypatch, 19999)
+        a, b = self._two_boxes(conn)
+        mock_server.received_commands.clear()
+
+        boolean_union(ctx=None, object_ids=[a, b], dry_run=True)
+        conn.disconnect()
+        boolean_union(ctx=None, object_ids=[a, b], dry_run=True)
+
+        assert mock_server.received_commands.count("describe_capabilities") == 2
+
+    def test_describe_capabilities_is_callable_normally(self, mock_server, monkeypatch):
+        """The gate reads capabilities by sending describe_capabilities, so that
+        command has to stay callable in its own right."""
+        conn = self._connection(monkeypatch, 19999)
+
+        result = conn.send_command("describe_capabilities", {})
+
+        by_name = {c["name"]: c for c in result["commands"]}
+        assert by_name["boolean_union"]["supports_dry_run"] is True
+        assert by_name["create_object"]["supports_dry_run"] is False
 
 
 class TestLayers:

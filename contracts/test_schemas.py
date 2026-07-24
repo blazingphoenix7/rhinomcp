@@ -457,10 +457,11 @@ def test_responses():
     print("  capabilities:")
     capabilities = {
         "version": "0.3.2",
-        "command_count": 2,
+        "command_count": 3,
         "commands": [
-            {"name": "create_object", "read_only": False},
-            {"name": "get_objects", "read_only": True},
+            {"name": "boolean_union", "read_only": False, "supports_dry_run": True},
+            {"name": "create_object", "read_only": False, "supports_dry_run": False},
+            {"name": "get_objects", "read_only": True, "supports_dry_run": False},
         ],
         "perception": {
             "description": "Mutating commands accept opt-in envelope flags.",
@@ -478,6 +479,17 @@ def test_responses():
                     "perception": {"description": "none", "envelope_flags": []}}
     if not validate("responses/capabilities.json", minimal_caps):
         all_passed = False
+    # supports_dry_run is optional: a plugin older than the flag omits it, and its
+    # answer still has to validate. A client reads absent as false, which is the
+    # same fail-closed verdict the schema's optionality encodes.
+    legacy_caps = {
+        "version": "0.3.1",
+        "command_count": 1,
+        "commands": [{"name": "boolean_union", "read_only": False}],
+        "perception": {"description": "none", "envelope_flags": []},
+    }
+    if not validate("responses/capabilities.json", legacy_caps):
+        all_passed = False
     caps_validator = Draft202012Validator(load_schema_with_refs("responses/capabilities.json"))
     bad_caps = [
         # a command missing read_only
@@ -485,6 +497,10 @@ def test_responses():
          "perception": {"description": "d", "envelope_flags": []}},
         # read_only not a boolean
         {"version": "0.3.2", "command_count": 1, "commands": [{"name": "x", "read_only": "yes"}],
+         "perception": {"description": "d", "envelope_flags": []}},
+        # supports_dry_run not a boolean
+        {"version": "0.3.2", "command_count": 1,
+         "commands": [{"name": "x", "read_only": False, "supports_dry_run": "yes"}],
          "perception": {"description": "d", "envelope_flags": []}},
         # unknown top-level field
         {"version": "0.3.2", "command_count": 0, "commands": [],

@@ -1015,6 +1015,41 @@ class TestBooleanOperationsTools:
         assert call_args[0][1]["dry_run"] is True
         assert "Predicted results" in result
 
+    @patch('rhinomcp.tools.boolean_operations.get_rhino_connection')
+    def test_boolean_union_propagates_the_failure(self, mock_get_conn):
+        """A failed boolean is a failed tool call, not a successful string that
+        happens to start with "Error"."""
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = Exception("Boolean union failed on 2 objects")
+        mock_get_conn.return_value = mock_conn
+
+        with pytest.raises(Exception, match="Boolean union failed on 2 objects"):
+            boolean_union(ctx=None, object_ids=["id1", "id2"])
+
+    @patch('rhinomcp.tools.boolean_operations.get_rhino_connection')
+    def test_boolean_difference_propagates_the_failure(self, mock_get_conn):
+        from rhinomcp.tools.boolean_operations import boolean_difference
+
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = Exception("Boolean difference failed")
+        mock_get_conn.return_value = mock_conn
+
+        with pytest.raises(Exception, match="Boolean difference failed"):
+            boolean_difference(ctx=None, base_id="base-id", subtract_ids=["sub1"])
+
+    @patch('rhinomcp.tools.boolean_operations.get_rhino_connection')
+    def test_boolean_intersection_propagates_the_failure(self, mock_get_conn):
+        from rhinomcp.tools.boolean_operations import boolean_intersection
+
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = Exception("Boolean intersection failed")
+        mock_get_conn.return_value = mock_conn
+
+        with pytest.raises(Exception, match="Boolean intersection failed"):
+            boolean_intersection(ctx=None, object_ids=["id1", "id2"])
+
 
 class TestUndoRedoTools:
     """Tests for undo and redo tools."""

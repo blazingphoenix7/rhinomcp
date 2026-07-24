@@ -41,7 +41,7 @@ def boolean_union(
         return f"{result['message']}. Result IDs: {result['result_ids']}"
     except Exception as e:
         logger.error(f"Error in boolean union: {str(e)}")
-        return f"Error in boolean union: {str(e)}"
+        raise
 
 
 @mcp.tool()
@@ -85,7 +85,7 @@ def boolean_difference(
         return f"{result['message']}. Result IDs: {result['result_ids']}"
     except Exception as e:
         logger.error(f"Error in boolean difference: {str(e)}")
-        return f"Error in boolean difference: {str(e)}"
+        raise
 
 
 @mcp.tool()
@@ -126,4 +126,4 @@ def boolean_intersection(
         return f"{result['message']}. Result IDs: {result['result_ids']}"
     except Exception as e:
         logger.error(f"Error in boolean intersection: {str(e)}")
-        return f"Error in boolean intersection: {str(e)}"
+        raise

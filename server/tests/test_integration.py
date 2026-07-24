@@ -658,6 +658,20 @@ class TestDryRunCapabilityGate:
         assert b in legacy_mock_server.objects
         assert "boolean_intersection" not in legacy_mock_server.received_commands
 
+    def test_the_wrapper_surfaces_the_refusal_as_a_tool_error(self, legacy_mock_server, monkeypatch):
+        """What the user gets: asking boolean_union for a preview against an old
+        plugin fails the tool call and leaves both objects standing."""
+        from rhinomcp.tools.boolean_operations import boolean_union
+
+        conn = self._connection(monkeypatch, 19998)
+        a, b = self._two_boxes(conn)
+        before = set(legacy_mock_server.objects)
+
+        with pytest.raises(Exception, match="does not report dry_run support"):
+            boolean_union(ctx=None, object_ids=[a, b], dry_run=True)
+
+        assert set(legacy_mock_server.objects) == before
+
     def test_old_plugin_serves_a_normal_boolean_unchanged(self, legacy_mock_server, monkeypatch):
         """Without dry_run nothing is gated: the command goes straight out and
         the capability lookup never happens, so the old plugin is served exactly
